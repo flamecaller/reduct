@@ -22,7 +22,8 @@ class string;
 class table;
 
 using atom_ptr = std::shared_ptr<atom const>;
-using table_values = std::vector<std::pair<atom_ptr, atom_ptr>>;
+using kv_pair = std::pair<atom_ptr, atom_ptr>;
+using table_values = std::vector<kv_pair>;
 
 auto make_symbol(std::string value) -> atom_ptr;
 auto make_string(std::string value) -> atom_ptr;
@@ -122,7 +123,7 @@ bool operator== (atom const& lhs, atom const& rhs)
 			return lhs.value().compare(rhs.value()) == 0;
 		}
 
-		case atom_type::table: 
+		case atom_type::table:
 		{
 			return false;
 		}
@@ -450,81 +451,64 @@ auto read(atom_ptr const& input) -> atom_ptr
 }
 
 
-auto operator<< (std::ostream& out, atom const& a) -> std::ostream&
+template <typename Fn>
+void print_table(std::ostream& out, atom_ptr const& table, Fn print_atom)
 {
-	switch (a.type())
+	assert(table->type() == atom_type::table);
+
+	out << "{";
+
+	std::string separator;
+	for (auto kv : table->values())
 	{
-		case atom_type::symbol: 
-		{
-			out << a.value(); 
-			break;
-		}
-
-		case atom_type::string:
-		{
-			out << '"' << a.value() << '"';
-			break;
-		}
-
-		case atom_type::table:
-		{
-			auto const& values = a.values();
-			out << "{";
-			auto it = cbegin(values);
-			auto last = cend(values);
-			while (it != last)
-			{
-				out << (*it->first) << " = " << (*it->second);
-				if (++it != last)
-				{
-					out << ", ";
-				}
-			}
-			out << "}";
-			break;
-		}
-
-		default:
-		{
-			throw std::runtime_error{ "Unknown atom_type" };
-		}
+		out << separator;
+		print_atom(out, kv.first);
+		out << " = ";
+		print_atom(out, kv.second);
+		separator = ", ";
 	}
 
+	out << "}";
+}
+
+
+auto operator<< (std::ostream& out, atom_ptr const& patom) -> std::ostream&
+{
+	switch (patom->type())
+	{
+	case atom_type::symbol: { out << patom->value(); break; }
+	case atom_type::string: { out << '"' << patom->value() << '"'; break; }
+	case atom_type::table:  { print_table(out, patom, operator<<); break; }
+	default:                { throw std::runtime_error{ "Unknown atom_type" }; }
+	}
 	return out;
 }
 
 
-auto operator<< (std::ostream& out, atom_ptr const& p) -> std::ostream&
+void pretty_print(std::ostream& out, atom_ptr const& patom)
 {
-	out << (*p);
-	return out;
-}
-
-
-void pretty_print(std::ostream& out, atom_ptr const& p)
-{
-	switch (p->type())
+	switch (patom->type())
 	{
 		case atom_type::symbol:
 		case atom_type::string:
 		{
-			out << p;
+			out << patom;
 			break;
 		}
 
 		case atom_type::table:
 		{
-			if (is_statement(p))
+			if (is_statement(patom))
 			{
 				int n = 0;
 				atom_ptr nsym = make_symbol(std::to_string(n));
-				atom_ptr statement_atom = lookup(p, nsym);
+				atom_ptr statement_atom = lookup(patom, nsym);
 				while (true)
 				{
 					pretty_print(out, statement_atom);
 
 					nsym = make_symbol(std::to_string(++n));
-					statement_atom = lookup(p, nsym);
+					statement_atom = lookup(patom, nsym);
 					if (is_lookup_error(statement_atom))
 					{
 						break;
@@ -537,21 +521,7 @@ void pretty_print(std::ostream& out, atom_ptr const& p)
 			}
 			else
 			{
-				auto const& values = p->values();
-				out << "{";
-				auto it = cbegin(values);
-				auto last = cend(values);
-				while (it != last)
-				{
-					pretty_print(out, it->first);
-					out << " = ";
-					pretty_print(out, it->second);
-					if (++it != last)
-					{
-						out << ", ";
-					}
-				}
-				out << "}";
+				print_table(out, patom, pretty_print);
 			}
 			break;
 		}
@@ -587,7 +557,7 @@ int main(int argc, char* argv[])
 		if (is_read_error(read_result))
 		{
 			std::cout << "error: " << read_result << '\n';
-			std::cout << "Read error: " << lookup(read_result, symbols::message)->value() << '\n';
+			std::cout << "Read error: " << lookup(read_result, symbols::message)->value() << '\n\n';
 			continue;
 		}
 		std::cout << "read: " << read_result << '\n';

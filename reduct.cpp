@@ -1,11 +1,11 @@
 #include <algorithm>
 #include <cassert>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <variant>
-#include <vector>
 
 
 enum class atom_type
@@ -22,8 +22,10 @@ class string;
 class table;
 
 using atom_ptr = std::shared_ptr<atom const>;
-using kv_pair = std::pair<atom_ptr, atom_ptr>;
-using table_values = std::vector<kv_pair>;
+bool operator< (atom_ptr const&, atom_ptr const&);
+bool operator== (atom_ptr const&, atom_ptr const&);
+
+using table_values = std::map<atom_ptr, atom_ptr>;
 
 
 class atom
@@ -31,27 +33,26 @@ class atom
 public:
 	atom(atom_type type, std::string value) : 
 		m_type(type), 
-		m_value(value) 
+		m_value(std::move(value))
 	{
 		assert(m_type == atom_type::symbol || m_type == atom_type::string);
 	}
 
-	explicit atom(table_values values) : 
-		m_type(atom_type::table), 
-		m_value(values) 
+	explicit atom(table_values values) :
+		m_type(atom_type::table),
+		m_value(std::move(values))
 	{
-		// TODO: sort values into some canonical order (alphabetically by key?)
 	}
 
 	atom_type type() const { return m_type; }
 
-	std::string const& value() const 
+	std::string const& get_value() const 
 	{
 		assert(type() == atom_type::symbol || type() == atom_type::string);
 		return std::get<std::string>(m_value);
 	}
 
-	table_values const& values() const
+	table_values const& get_pairs() const
 	{
 		assert(type() == atom_type::table);
 		return std::get<table_values>(m_value);
@@ -102,6 +103,72 @@ bool is_table(atom_ptr const& a)
 }
 
 
+bool operator< (atom_ptr const& lhs, atom_ptr const& rhs)
+{
+	if (lhs->type() != rhs->type())
+	{
+		return (static_cast<int>(lhs->type()) < static_cast<int>(rhs->type()));
+	}
+
+	switch (lhs->type())
+	{
+		case atom_type::symbol:
+		case atom_type::string:
+		{
+			return lhs->get_value().compare(rhs->get_value()) < 0;
+		}
+
+		case atom_type::table:
+		{
+			auto const& lp = lhs->get_pairs();
+			auto const& rp = rhs->get_pairs();
+			return std::lexicographical_compare(
+				cbegin(lp), cend(lp),
+				cbegin(rp), cend(rp)
+			);
+		}
+
+		default:
+		{
+			throw std::runtime_error{ "Unknown atom_type" };
+		}
+	}
+}
+
+
+bool operator== (atom_ptr const& lhs, atom_ptr const& rhs)
+{
+	if (lhs.get() == rhs.get())
+	{
+		return true;
+	}
+
+	if (lhs->type() != rhs->type())
+	{
+		return false;
+	}
+
+	switch (lhs->type())
+	{
+	case atom_type::symbol:
+	case atom_type::string:
+	{
+		return lhs->get_value().compare(rhs->get_value()) == 0;
+	}
+
+	case atom_type::table:
+	{
+		return false;
+	}
+
+	default:
+	{
+		throw std::runtime_error{ "Unknown atom_type" };
+	}
+	}
+}
+
+
 namespace symbols
 {
 	atom_ptr const type = make_symbol("__type");
@@ -118,68 +185,42 @@ namespace symbols
 }
 
 
-bool eq(atom_ptr const& lhs, atom_ptr const& rhs)
+auto make_error(atom_ptr const& type, std::string const& msg, table_values data = {})
 {
-	if (lhs.get() == rhs.get())
-	{
-		return true;
-	}
+	table_values values = std::move(data);
+	values.emplace(symbols::type, symbols::error);
+	values.emplace(symbols::error_type, type);
+	values.emplace(symbols::message, make_string(msg));
 
-	if (lhs->type() != rhs->type())
-	{
-		return false;
-	}
-
-	switch (lhs->type())
-	{
-		case atom_type::symbol:
-		case atom_type::string:
-		{
-			return lhs->value().compare(rhs->value()) == 0;
-		}
-
-		case atom_type::table:
-		{
-			return false;
-		}
-
-		default: 
-		{
-			throw std::runtime_error{ "Unknown atom_type" };
-		}
-	}
+	return make_table(std::move(values));
 }
 
 
 auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 {
-	table_values const& values = map->values();
-
-	auto const last = cend(values);
-	auto const it =
-		std::find_if(
-			cbegin(values), last,
-			[&key](auto const& kv) { return eq(kv.first, key); }
-	);
-
-	if (it != last)
+	table_values const& values = map->get_pairs();
+	auto const it = values.find(key);
+	if (it != cend(values))
 	{
 		return it->second;
 	}
 	else
 	{
-		return make_table({
-			{symbols::error_type, symbols::lookup_error},
-			{symbols::map, map},
-			{symbols::key, key}
-			});
+		return make_error(
+			symbols::lookup_error, 
+			"Table lookup failed", 
+			{
+				{symbols::map, map},
+				{symbols::key, key}
+			}
+		);
 	}
 }
 
 
 auto lookup_eq(atom_ptr const& a, atom_ptr const& key, atom_ptr const& rhs)
 {
-	return is_table(a) && eq(lookup(a, key), rhs);
+	return is_table(a) && (lookup(a, key) == rhs);
 }
 
 
@@ -218,16 +259,6 @@ bool is_symbol_char(char c)
 		|| c == '*'
 		|| c == '/'
 		|| c == '%';
-}
-
-
-auto make_error(atom_ptr const& type, std::string const& msg)
-{
-	return make_table({
-		{symbols::type, symbols::error},
-		{symbols::error_type, type},
-		{symbols::message, make_string(msg)}
-	});
 }
 
 
@@ -355,7 +386,7 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			return { si, value };
 		}
 
-		values.emplace_back(key, value);
+		values.emplace(key, value);
 
 		// ,
 		si = skip_ws(si, last);
@@ -429,11 +460,11 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			else if (values.size() == 1)
 			{
 				// don't wrap in a table if it's not a compound statement
-				return { si, values[0].second };
+				return { si, values.begin()->second };
 			}
 			else
 			{
-				values.emplace_back(symbols::type, symbols::statement);
+				values.emplace(symbols::type, symbols::statement);
 				return { si, make_table(values) };
 			}
 		}
@@ -444,7 +475,7 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			return { si, result };
 		}
 		
-		values.emplace_back(make_symbol(std::to_string(n++)), result);
+		values.emplace(make_symbol(std::to_string(n++)), result);
 	}
 }
 
@@ -457,7 +488,7 @@ auto read(atom_ptr const& input) -> atom_ptr
 		return input;
 	}
 
-	std::string const& str = input->value();
+	std::string const& str = input->get_value();
 	auto si = cbegin(str);
 	auto const last = cend(str);
 	auto const [new_si, result] = read_statement(si, last);
@@ -480,7 +511,7 @@ void print_table(std::ostream& out, atom_ptr const& table, Fn print_atom)
 	out << "{";
 
 	std::string separator;
-	for (auto kv : table->values())
+	for (auto kv : table->get_pairs())
 	{
 		out << separator;
 		print_atom(out, kv.first);
@@ -497,8 +528,8 @@ auto operator<< (std::ostream& out, atom_ptr const& patom) -> std::ostream&
 {
 	switch (patom->type())
 	{
-	case atom_type::symbol: { out << patom->value(); break; }
-	case atom_type::string: { out << '"' << patom->value() << '"'; break; }
+	case atom_type::symbol: { out << patom->get_value(); break; }
+	case atom_type::string: { out << '"' << patom->get_value() << '"'; break; }
 	case atom_type::table:  { print_table(out, patom, operator<<); break; }
 	default:                { throw std::runtime_error{ "Unknown atom_type" }; }
 	}
@@ -578,7 +609,7 @@ int main(int argc, char* argv[])
 		if (is_read_error(read_result))
 		{
 			std::cout << "error: " << read_result << '\n';
-			std::cout << "Read error: " << lookup(read_result, symbols::message)->value() << '\n\n';
+			std::cout << "Read error: " << lookup(read_result, symbols::message)->get_value() << "\n\n";
 			continue;
 		}
 		std::cout << "read: " << read_result << '\n';

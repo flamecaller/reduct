@@ -28,6 +28,9 @@ using atom_ptr = std::shared_ptr<atom const>;
 bool operator< (atom_ptr const&, atom_ptr const&);
 bool operator== (atom_ptr const&, atom_ptr const&);
 
+auto operator<< (std::ostream& out, atom_ptr const& patom) -> std::ostream&;
+void pretty_print(std::ostream& out, atom_ptr const& patom);
+
 using table_values = std::map<atom_ptr, atom_ptr>;
 
 
@@ -225,6 +228,18 @@ bool is_error(atom_ptr const& a)
 }
 
 
+auto len(atom_ptr const& a) -> size_t
+{
+	int n = 0;
+	atom_ptr nsym = make_symbol(std::to_string(n));
+	while (!is_error(lookup(a, nsym)))
+	{
+		nsym = make_symbol(std::to_string(++n));
+	}
+	return n;
+}
+
+
 bool is_symbol_char(char c)
 {
 	return isalnum(c)
@@ -419,9 +434,11 @@ auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 template <typename StrIt>
 auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 {
-	table_values values;
-	int n = 0;
+	table_values values = { 
+		{symbols::type, symbols::statement}
+	};
 
+	int n = 0;
 	while (true)
 	{
 		auto [new_si, result] = read_atom(si, last);
@@ -434,16 +451,7 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			{
 				return { si, make_error(symbols::read_error, "Expected a statement") };
 			}
-			else if (values.size() == 1)
-			{
-				// don't wrap in a table if it's not a compound statement
-				return { si, values.begin()->second };
-			}
-			else
-			{
-				values.emplace(symbols::type, symbols::statement);
-				return { si, make_table(values) };
-			}
+			return { si, make_table(values) };
 		}
 			
 		if (is_error(result))
@@ -482,81 +490,44 @@ auto read(atom_ptr const& input) -> atom_ptr
 
 auto eval(atom_ptr const& expr) -> atom_ptr
 {
-	// Anything that isn't a statement evals to itself
+	// non-statement evals to itself
 	if (!is_statement(expr))
 	{
 		return expr;
 	}
 
-	// Perform a lookup using first and second values in statement
-	atom_ptr const& map = lookup(expr, symbols::zero);
-	if (is_error(map))
+	// statement of length one returns eval of its item
+	size_t const expr_len = len(expr);
+	if (expr_len == 1)
 	{
-		return map;
+		return eval(lookup(expr, symbols::zero));
 	}
 
-	atom_ptr const& key = lookup(expr, symbols::one);
-	if (is_error(key))
-	{
-		return key;
-	}
-
-	atom_ptr result = lookup(map, key);
-	
-	// If result is a statement, copy that to the start of a new statement,
-	// otherwise just use the result value.
-	table_values new_expr;
-	int n = 0;
-	atom_ptr nsym = make_symbol(std::to_string(n++));
-	if (is_statement(result))
-	{
-		while (true)
-		{
-			atom_ptr const& nr = lookup(result, nsym);
-			if (is_error(nr))
-			{
-				break;
-			}
-			else
-			{
-				new_expr.emplace(nsym, nr);
-			}
-			nsym = make_symbol(std::to_string(n++));
-		}
-	}
-	else
-	{
-		new_expr.emplace(nsym, result);
-	}
-
-	// Append the rest of the original statement minus the map/key used for lookup
-	int en = 2;
-	atom_ptr ensym = make_symbol(std::to_string(en++));
-	while (true)
-	{
-		atom_ptr const& enr = lookup(expr, ensym);
-		if (is_error(enr))
-		{
-			break;
-		}
-		else
-		{
-			nsym = make_symbol(std::to_string(n++));
-			new_expr.emplace(nsym, enr);
-		}
-		ensym = make_symbol(std::to_string(en++));
-	}
-
-	// Collapse if necessary, otherwise tag it as a statement
-	if (n == 1)
+	// statement of more than one item performs a lookup
+	atom_ptr const& map = eval(lookup(expr, symbols::zero));
+	atom_ptr const& key = eval(lookup(expr, symbols::one));
+	atom_ptr const& result = eval(lookup(map, key));
+	if (is_error(result))
 	{
 		return result;
 	}
-	else
+	
+	// Begin a new expression with the result, followed by the rest of the original
+	// statement minus the map & key.
+	table_values new_expr {
+		{symbols::type, symbols::statement},
+		{symbols::zero, result}
+	};
+	
+	for (size_t n = 2; n < expr_len; ++n)
 	{
-		new_expr.emplace(symbols::type, symbols::statement);
-		return make_table(std::move(new_expr));
+		new_expr.emplace(
+			make_symbol(std::to_string(n-1)),
+			lookup(expr, make_symbol(std::to_string(n)))
+		);
 	}
+
+	return make_table(std::move(new_expr));
 }
 
 
@@ -609,24 +580,18 @@ void pretty_print(std::ostream& out, atom_ptr const& patom)
 		{
 			if (is_statement(patom))
 			{
-				int n = 0;
-				atom_ptr nsym = make_symbol(std::to_string(n));
-				atom_ptr statement_atom = lookup(patom, nsym);
-				while (true)
+				out << "(";
+				size_t const n = len(patom);
+				for (size_t i = 0; i < n;)
 				{
+					atom_ptr statement_atom = lookup(patom, make_symbol(std::to_string(i)));
 					pretty_print(out, statement_atom);
-
-					nsym = make_symbol(std::to_string(++n));
-					statement_atom = lookup(patom, nsym);
-					if (is_error(statement_atom))
-					{
-						break;
-					}
-					else
+					if (++i < n)
 					{
 						out << ' ';
 					}
 				}
+				out << ")";
 			}
 			else
 			{
@@ -656,6 +621,40 @@ auto prompt_user() -> atom_ptr
 }
 
 
+void repl()
+{
+	while (true)
+	{
+		// read
+		atom_ptr const input = prompt_user();
+
+		atom_ptr value = read(input);
+		if (is_error(value))
+		{
+			std::cout << "Read error: " << lookup(value, symbols::message)->get_value() << "\n\n";
+			continue;
+		}
+		
+		// eval
+		while (is_statement(value))
+		{
+			value = eval(value);
+		}
+
+		// print
+		if (is_error(value))
+		{
+			std::cout << "Eval error: " << lookup(value, symbols::message)->get_value();
+		}
+		else
+		{
+			pretty_print(std::cout, value);
+		}
+		std::cout << "\n\n";
+	}
+}
+
+
 int main(int argc, char* argv[])
 {
 	// quick tests
@@ -672,44 +671,6 @@ int main(int argc, char* argv[])
 	assert(is_error( lookup(tables::empty, make_table({})) ));
 	assert(lookup(make_table({ {make_symbol("foo"), make_symbol("bar")} }), make_symbol("foo")) == make_symbol("bar"));
 
-	// REPL
-	while (true)
-	{
-		atom_ptr const input = prompt_user();
-
-		atom_ptr value = read(input);
-		if (is_error(value))
-		{
-			//std::cout << "error: " << value << '\n';
-			std::cout << "Read error: " << lookup(value, symbols::message)->get_value() << "\n\n";
-			continue;
-		}
-
-		//std::cout << "read: " << read_result << '\n';
-
-		//std::cout << "pretty: ";
-		//pretty_print(std::cout, read_result);
-		//std::cout << "\n";
-
-		while (is_statement(value))
-		{
-			//std::cout << "eval: " << value << "\n";
-
-			std::cout << "=> ";
-			pretty_print(std::cout, value);
-			std::cout << "\n";
-
-			value = eval(value);
-		}
-
-		if (is_error(value))
-		{
-			std::cout << "Eval error: " << lookup(value, symbols::message)->get_value();
-		}
-		else
-		{
-			pretty_print(std::cout, value);
-		}
-		std::cout << "\n\n";
-	}
+	// repl
+	repl();
 }

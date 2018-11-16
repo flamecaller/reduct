@@ -25,10 +25,6 @@ using atom_ptr = std::shared_ptr<atom const>;
 using kv_pair = std::pair<atom_ptr, atom_ptr>;
 using table_values = std::vector<kv_pair>;
 
-auto make_symbol(std::string value) -> atom_ptr;
-auto make_string(std::string value) -> atom_ptr;
-auto make_table(table_values values = {}) -> atom_ptr;
-
 
 class atom
 {
@@ -37,26 +33,27 @@ public:
 		m_type(type), 
 		m_value(value) 
 	{
-		assert(is_symbol() || is_string());
+		assert(m_type == atom_type::symbol || m_type == atom_type::string);
 	}
 
-	explicit atom(table_values values) : m_type(atom_type::table), m_value(values) {}
+	explicit atom(table_values values) : 
+		m_type(atom_type::table), 
+		m_value(values) 
+	{
+		// TODO: sort values into some canonical order (alphabetically by key?)
+	}
 
 	atom_type type() const { return m_type; }
 
-	bool is_symbol() const { return m_type == atom_type::symbol; }
-	bool is_string() const { return m_type == atom_type::string; }
-	bool is_table()  const { return m_type == atom_type::table; }
-
 	std::string const& value() const 
 	{
-		assert(is_symbol() || is_string()); 
+		assert(type() == atom_type::symbol || type() == atom_type::string);
 		return std::get<std::string>(m_value);
 	}
 
 	table_values const& values() const
 	{
-		assert(is_table());
+		assert(type() == atom_type::table);
 		return std::get<table_values>(m_value);
 	}
 
@@ -87,6 +84,24 @@ auto make_table(table_values values) -> atom_ptr
 }
 
 
+bool is_symbol(atom_ptr const& a)
+{
+	return a->type() == atom_type::symbol;
+}
+
+
+bool is_string(atom_ptr const& a)
+{
+	return a->type() == atom_type::string;
+}
+
+
+bool is_table(atom_ptr const& a)
+{
+	return a->type() == atom_type::table;
+}
+
+
 namespace symbols
 {
 	atom_ptr const type = make_symbol("__type");
@@ -103,24 +118,24 @@ namespace symbols
 }
 
 
-bool operator== (atom const& lhs, atom const& rhs)
+bool eq(atom_ptr const& lhs, atom_ptr const& rhs)
 {
-	if (&lhs == &rhs)
+	if (lhs.get() == rhs.get())
 	{
 		return true;
 	}
 
-	if (lhs.type() != rhs.type())
+	if (lhs->type() != rhs->type())
 	{
 		return false;
 	}
 
-	switch (lhs.type())
+	switch (lhs->type())
 	{
 		case atom_type::symbol:
 		case atom_type::string:
 		{
-			return lhs.value().compare(rhs.value()) == 0;
+			return lhs->value().compare(rhs->value()) == 0;
 		}
 
 		case atom_type::table:
@@ -141,11 +156,11 @@ auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 	table_values const& values = map->values();
 
 	auto const last = cend(values);
-	auto const it = 
+	auto const it =
 		std::find_if(
 			cbegin(values), last,
-			[&key](auto const& kv) { return (*kv.first) == (*key); }
-		);
+			[&key](auto const& kv) { return eq(kv.first, key); }
+	);
 
 	if (it != last)
 	{
@@ -157,32 +172,38 @@ auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 			{symbols::error_type, symbols::lookup_error},
 			{symbols::map, map},
 			{symbols::key, key}
-		});
+			});
 	}
 }
 
 
-auto eq(atom_ptr const& a, atom_ptr const& b)
+auto lookup_eq(atom_ptr const& a, atom_ptr const& key, atom_ptr const& rhs)
 {
-	return (*a) == (*b);
-}
-
-
-bool is_read_error(atom_ptr const& a)
-{
-	return a->is_table() && eq(lookup(a, symbols::error_type), symbols::read_error);
-}
-
-
-bool is_lookup_error(atom_ptr const& a)
-{
-	return a->is_table() && eq(lookup(a, symbols::error_type), symbols::lookup_error);
+	return is_table(a) && eq(lookup(a, key), rhs);
 }
 
 
 bool is_statement(atom_ptr const& a)
 {
-	return a->is_table() && eq(lookup(a, symbols::type), symbols::statement);
+	return lookup_eq(a, symbols::type, symbols::statement);
+}
+
+
+bool is_error(atom_ptr const& a)
+{
+	return lookup_eq(a, symbols::type, symbols::error);
+}
+
+
+bool is_read_error(atom_ptr const& a)
+{
+	return lookup_eq(a, symbols::error_type, symbols::read_error);
+}
+
+
+bool is_lookup_error(atom_ptr const& a)
+{
+	return lookup_eq(a, symbols::error_type, symbols::lookup_error);
 }
 
 
@@ -431,7 +452,7 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 auto read(atom_ptr const& input) -> atom_ptr
 {
 	assert(input);
-	if (!input->is_string())
+	if (!is_string(input))
 	{
 		return input;
 	}

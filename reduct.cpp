@@ -451,7 +451,16 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			{
 				return { si, make_error(symbols::read_error, "Expected a statement") };
 			}
-			return { si, make_table(values) };
+			else if (n == 1)
+			{
+				// if only a single value, unwrap it from the statement for cleaner 
+				// reading of value types
+				return { si, values.find(symbols::zero)->second };
+			}
+			else
+			{
+				return { si, make_table(values) };
+			}
 		}
 			
 		if (is_error(result))

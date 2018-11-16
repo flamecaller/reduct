@@ -176,12 +176,16 @@ namespace symbols
 	atom_ptr const statement = make_symbol("statement");
 
 	atom_ptr const error_type = make_symbol("__error-type");
-	atom_ptr const read_error = make_symbol("read-error");
 	atom_ptr const lookup_error = make_symbol("lookup-error");
+	atom_ptr const read_error = make_symbol("read-error");
+	atom_ptr const eval_error = make_symbol("eval-error");
 
 	atom_ptr const map = make_symbol("map");
 	atom_ptr const key = make_symbol("key");
 	atom_ptr const message = make_symbol("message");
+
+	atom_ptr const zero = make_symbol("0");
+	atom_ptr const one = make_symbol("1");
 }
 
 
@@ -198,6 +202,18 @@ auto make_error(atom_ptr const& type, std::string const& msg, table_values data 
 
 auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 {
+	if (!is_table(map))
+	{
+		return make_error(
+			symbols::lookup_error,
+			"Expected a table for lookup",
+			{
+				{symbols::map, map},
+				{symbols::key, key}
+			}
+		);
+	}
+
 	table_values const& values = map->get_pairs();
 	auto const it = values.find(key);
 	if (it != cend(values))
@@ -208,7 +224,7 @@ auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 	{
 		return make_error(
 			symbols::lookup_error, 
-			"Table lookup failed", 
+			"Could not find key in table", 
 			{
 				{symbols::map, map},
 				{symbols::key, key}
@@ -233,18 +249,6 @@ bool is_statement(atom_ptr const& a)
 bool is_error(atom_ptr const& a)
 {
 	return lookup_eq(a, symbols::type, symbols::error);
-}
-
-
-bool is_read_error(atom_ptr const& a)
-{
-	return lookup_eq(a, symbols::error_type, symbols::read_error);
-}
-
-
-bool is_lookup_error(atom_ptr const& a)
-{
-	return lookup_eq(a, symbols::error_type, symbols::lookup_error);
 }
 
 
@@ -381,7 +385,7 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 		// value
 		auto const [si2, value] = read_statement(si, last);
 		si = si2;
-		if (is_read_error(value))
+		if (is_error(value))
 		{
 			return { si, value };
 		}
@@ -469,7 +473,7 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			}
 		}
 			
-		if (is_read_error(result))
+		if (is_error(result))
 		{
 			// propogate error
 			return { si, result };
@@ -500,6 +504,86 @@ auto read(atom_ptr const& input) -> atom_ptr
 	}
 
 	return result;
+}
+
+
+auto eval(atom_ptr const& expr) -> atom_ptr
+{
+	// Anything that isn't a statement evals to itself
+	if (!is_statement(expr))
+	{
+		return expr;
+	}
+
+	// Perform a lookup using first and second values in statement
+	atom_ptr const& map = lookup(expr, symbols::zero);
+	if (is_error(map))
+	{
+		return map;
+	}
+
+	atom_ptr const& key = lookup(expr, symbols::one);
+	if (is_error(key))
+	{
+		return key;
+	}
+
+	atom_ptr result = lookup(map, key);
+	
+	// If result is a statement, copy that to the start of a new statement,
+	// otherwise just use the result value.
+	table_values new_expr;
+	int n = 0;
+	atom_ptr nsym = make_symbol(std::to_string(n++));
+	if (is_statement(result))
+	{
+		while (true)
+		{
+			atom_ptr const& nr = lookup(result, nsym);
+			if(is_error(nr))
+			{
+				break;
+			}
+			else
+			{
+				new_expr.emplace(nsym, nr);
+			}
+			nsym = make_symbol(std::to_string(n++));
+		}
+	}
+	else
+	{
+		new_expr.emplace(nsym, result);
+	}
+
+	// Append the rest of the original statement minus the map/key used for lookup
+	int en = 2;
+	atom_ptr ensym = make_symbol(std::to_string(en++));
+	while (true)
+	{
+		atom_ptr const& enr = lookup(expr, ensym);
+		if (is_error(enr))
+		{
+			break;
+		}
+		else
+		{
+			new_expr.emplace(nsym, enr);
+		}
+		nsym = make_symbol(std::to_string(n++));
+		ensym = make_symbol(std::to_string(en++));
+	}
+
+	// Collapse if necessary, otherwise tag it as a statement
+	if (n == 1)
+	{
+		return result;
+	}
+	else
+	{
+		new_expr.emplace(symbols::type, symbols::statement);
+		return make_table(std::move(new_expr));
+	}
 }
 
 
@@ -561,7 +645,7 @@ void pretty_print(std::ostream& out, atom_ptr const& patom)
 
 					nsym = make_symbol(std::to_string(++n));
 					statement_atom = lookup(patom, nsym);
-					if (is_lookup_error(statement_atom))
+					if (is_error(statement_atom))
 					{
 						break;
 					}
@@ -605,17 +689,39 @@ int main(int argc, char* argv[])
 	{
 		atom_ptr const input = prompt_user();
 
-		atom_ptr const read_result = read(input);
-		if (is_read_error(read_result))
+		atom_ptr value = read(input);
+		if (is_error(value))
 		{
-			std::cout << "error: " << read_result << '\n';
-			std::cout << "Read error: " << lookup(read_result, symbols::message)->get_value() << "\n\n";
+			//std::cout << "error: " << value << '\n';
+			std::cout << "Read error: " << lookup(value, symbols::message)->get_value() << "\n\n";
 			continue;
 		}
-		std::cout << "read: " << read_result << '\n';
 
-		std::cout << "pretty: ";
-		pretty_print(std::cout, read_result);
+		//std::cout << "read: " << read_result << '\n';
+
+		//std::cout << "pretty: ";
+		//pretty_print(std::cout, read_result);
+		//std::cout << "\n";
+
+		while (is_statement(value))
+		{
+			//std::cout << "eval: " << value << "\n";
+
+			std::cout << "=> ";
+			pretty_print(std::cout, value);
+			std::cout << "\n";
+
+			value = eval(value);
+		}
+
+		if (is_error(value))
+		{
+			std::cout << "Eval error: " << lookup(value, symbols::message)->get_value();
+		}
+		else
+		{
+			pretty_print(std::cout, value);
+		}
 		std::cout << "\n\n";
 	}
 }

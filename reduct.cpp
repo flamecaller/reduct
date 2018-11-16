@@ -22,6 +22,9 @@ class string;
 class table;
 
 using atom_ptr = std::shared_ptr<atom const>;
+
+// these operators aren't very idiomatically C++, but they do make table_values'
+// lookup and the comparison functions work with a lot less fuss.
 bool operator< (atom_ptr const&, atom_ptr const&);
 bool operator== (atom_ptr const&, atom_ptr const&);
 
@@ -56,6 +59,24 @@ public:
 	{
 		assert(type() == atom_type::table);
 		return std::get<table_values>(m_value);
+	}
+
+	bool operator==(atom const& rhs) const
+	{
+		if (this == &rhs)
+		{
+			return true;
+		}
+		else
+		{
+			return (m_type == rhs.m_type) && (m_value == rhs.m_value);
+		}
+	}
+
+	bool operator<(atom const& rhs) const
+	{
+		return (m_type < rhs.m_type) 
+			|| (m_type == rhs.m_type) && (m_value < rhs.m_value);
 	}
 
 private:
@@ -105,67 +126,13 @@ bool is_table(atom_ptr const& a)
 
 bool operator< (atom_ptr const& lhs, atom_ptr const& rhs)
 {
-	if (lhs->type() != rhs->type())
-	{
-		return (static_cast<int>(lhs->type()) < static_cast<int>(rhs->type()));
-	}
-
-	switch (lhs->type())
-	{
-		case atom_type::symbol:
-		case atom_type::string:
-		{
-			return lhs->get_value().compare(rhs->get_value()) < 0;
-		}
-
-		case atom_type::table:
-		{
-			auto const& lp = lhs->get_pairs();
-			auto const& rp = rhs->get_pairs();
-			return std::lexicographical_compare(
-				cbegin(lp), cend(lp),
-				cbegin(rp), cend(rp)
-			);
-		}
-
-		default:
-		{
-			throw std::runtime_error{ "Unknown atom_type" };
-		}
-	}
+	return (*lhs) < (*rhs);
 }
 
 
 bool operator== (atom_ptr const& lhs, atom_ptr const& rhs)
 {
-	if (lhs.get() == rhs.get())
-	{
-		return true;
-	}
-
-	if (lhs->type() != rhs->type())
-	{
-		return false;
-	}
-
-	switch (lhs->type())
-	{
-	case atom_type::symbol:
-	case atom_type::string:
-	{
-		return lhs->get_value().compare(rhs->get_value()) == 0;
-	}
-
-	case atom_type::table:
-	{
-		return false;
-	}
-
-	default:
-	{
-		throw std::runtime_error{ "Unknown atom_type" };
-	}
-	}
+	return (*lhs) == (*rhs);
 }
 
 
@@ -186,6 +153,12 @@ namespace symbols
 
 	atom_ptr const zero = make_symbol("0");
 	atom_ptr const one = make_symbol("1");
+}
+
+
+namespace tables
+{
+	atom_ptr const empty = make_table({});
 }
 
 
@@ -540,7 +513,7 @@ auto eval(atom_ptr const& expr) -> atom_ptr
 		while (true)
 		{
 			atom_ptr const& nr = lookup(result, nsym);
-			if(is_error(nr))
+			if (is_error(nr))
 			{
 				break;
 			}
@@ -568,9 +541,9 @@ auto eval(atom_ptr const& expr) -> atom_ptr
 		}
 		else
 		{
+			nsym = make_symbol(std::to_string(n++));
 			new_expr.emplace(nsym, enr);
 		}
-		nsym = make_symbol(std::to_string(n++));
 		ensym = make_symbol(std::to_string(en++));
 	}
 
@@ -685,6 +658,21 @@ auto prompt_user() -> atom_ptr
 
 int main(int argc, char* argv[])
 {
+	// quick tests
+	//TODO: more comprehensive tests
+	assert( make_symbol("test") == make_symbol("test") );
+	assert( make_symbol("test") != make_symbol("two") );
+	assert( make_symbol("test") != make_string("test") );
+	assert( tables::empty == make_table({}) );
+	assert( tables::empty != make_table({ {symbols::zero, symbols::one} }));
+	assert( make_table({ {make_symbol("0"), make_symbol("1")} }) == make_table({ {make_symbol("0"), make_symbol("1")} }) );
+
+	assert(is_error( lookup(tables::empty, symbols::type) ));
+	assert(is_error( lookup(tables::empty, tables::empty) ));
+	assert(is_error( lookup(tables::empty, make_table({})) ));
+	assert(lookup(make_table({ {make_symbol("foo"), make_symbol("bar")} }), make_symbol("foo")) == make_symbol("bar"));
+
+	// REPL
 	while (true)
 	{
 		atom_ptr const input = prompt_user();

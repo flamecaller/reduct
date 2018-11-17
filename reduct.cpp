@@ -2,10 +2,23 @@
 #include <cassert>
 #include <iostream>
 #include <map>
-#include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <variant>
+
+
+class atom;
+
+// these operators aren't very idiomatically C++, but they do make table_values'
+// lookup and the comparison functions work with a lot less fuss.
+bool operator< (atom const&, atom const&);
+bool operator== (atom const&, atom const&);
+
+auto operator<< (std::ostream& out, atom const& atom) -> std::ostream&;
+void pretty_print(std::ostream& out, atom const& atom);
+
+using table_values = std::map<atom, atom>;
 
 
 enum class atom_type
@@ -14,24 +27,6 @@ enum class atom_type
 	string,
 	table
 };
-
-
-class atom;
-class symbol;
-class string;
-class table;
-
-using atom_ptr = std::shared_ptr<atom const>;
-
-// these operators aren't very idiomatically C++, but they do make table_values'
-// lookup and the comparison functions work with a lot less fuss.
-bool operator< (atom_ptr const&, atom_ptr const&);
-bool operator== (atom_ptr const&, atom_ptr const&);
-
-auto operator<< (std::ostream& out, atom_ptr const& patom) -> std::ostream&;
-void pretty_print(std::ostream& out, atom_ptr const& patom);
-
-using table_values = std::map<atom_ptr, atom_ptr>;
 
 
 class atom
@@ -64,22 +59,22 @@ public:
 		return std::get<table_values>(m_value);
 	}
 
-	bool operator==(atom const& rhs) const
+	friend bool operator==(atom const& lhs, atom const& rhs)
 	{
-		if (this == &rhs)
+		if (&lhs == &rhs)
 		{
 			return true;
 		}
 		else
 		{
-			return (m_type == rhs.m_type) && (m_value == rhs.m_value);
+			return (lhs.m_type == rhs.m_type) && (lhs.m_value == rhs.m_value);
 		}
 	}
 
-	bool operator<(atom const& rhs) const
+	friend bool operator<(atom const& lhs, atom const& rhs)
 	{
-		return (m_type < rhs.m_type) 
-			|| (m_type == rhs.m_type) && (m_value < rhs.m_value);
+		return (lhs.m_type < rhs.m_type) 
+			|| (lhs.m_type == rhs.m_type) && (lhs.m_value < rhs.m_value);
 	}
 
 private:
@@ -90,82 +85,76 @@ private:
 };
 
 
-auto make_symbol(std::string value) -> atom_ptr
+bool operator!= (atom const& lhs, atom const& rhs)
+{
+	return !(lhs == rhs);
+}
+
+
+auto make_symbol(std::string value) -> atom
 {
 	//TODO: pool these?
-	return std::make_shared<atom>(atom_type::symbol, std::move(value));
+	return atom(atom_type::symbol, std::move(value));
 }
 
 
-auto make_string(std::string value) -> atom_ptr
+auto make_string(std::string value) -> atom
 {
-	return std::make_shared<atom>(atom_type::string, std::move(value));
+	return atom(atom_type::string, std::move(value));
 }
 
 
-auto make_table(table_values values) -> atom_ptr
+auto make_table(table_values values) -> atom
 {
-	return std::make_shared<atom>(std::move(values));
+	return atom(std::move(values));
 }
 
 
-bool is_symbol(atom_ptr const& a)
+auto is_symbol(atom const& a) -> bool
 {
-	return a->type() == atom_type::symbol;
+	return a.type() == atom_type::symbol;
 }
 
 
-bool is_string(atom_ptr const& a)
+auto is_string(atom const& a) -> bool
 {
-	return a->type() == atom_type::string;
+	return a.type() == atom_type::string;
 }
 
 
-bool is_table(atom_ptr const& a)
+auto is_table(atom const& a) -> bool
 {
-	return a->type() == atom_type::table;
-}
-
-
-bool operator< (atom_ptr const& lhs, atom_ptr const& rhs)
-{
-	return (*lhs) < (*rhs);
-}
-
-
-bool operator== (atom_ptr const& lhs, atom_ptr const& rhs)
-{
-	return (*lhs) == (*rhs);
+	return a.type() == atom_type::table;
 }
 
 
 namespace symbols
 {
-	atom_ptr const type = make_symbol("__type");
-	atom_ptr const error = make_symbol("error");
-	atom_ptr const statement = make_symbol("statement");
+	atom const type = make_symbol("__type");
+	atom const error = make_symbol("error");
+	atom const statement = make_symbol("statement");
 
-	atom_ptr const error_type = make_symbol("__error-type");
-	atom_ptr const lookup_error = make_symbol("lookup-error");
-	atom_ptr const read_error = make_symbol("read-error");
-	atom_ptr const eval_error = make_symbol("eval-error");
+	atom const error_type = make_symbol("__error-type");
+	atom const lookup_error = make_symbol("lookup-error");
+	atom const read_error = make_symbol("read-error");
+	atom const eval_error = make_symbol("eval-error");
 
-	atom_ptr const map = make_symbol("map");
-	atom_ptr const key = make_symbol("key");
-	atom_ptr const message = make_symbol("message");
+	atom const map = make_symbol("map");
+	atom const key = make_symbol("key");
+	atom const message = make_symbol("message");
 
-	atom_ptr const zero = make_symbol("0");
-	atom_ptr const one = make_symbol("1");
+	atom const zero = make_symbol("0");
+	atom const one = make_symbol("1");
 }
 
 
 namespace tables
 {
-	atom_ptr const empty = make_table({});
+	atom const empty = make_table({});
 }
 
 
-auto make_error(atom_ptr const& type, std::string const& msg, table_values data = {})
+auto make_error(atom const& type, std::string const& msg, table_values data = {})
 {
 	table_values values = std::move(data);
 	values.emplace(symbols::type, symbols::error);
@@ -176,7 +165,7 @@ auto make_error(atom_ptr const& type, std::string const& msg, table_values data 
 }
 
 
-auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
+auto lookup(atom const& map, atom const& key) -> atom
 {
 	if (!is_table(map))
 	{
@@ -190,7 +179,7 @@ auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 		);
 	}
 
-	table_values const& values = map->get_pairs();
+	table_values const& values = map.get_pairs();
 	auto const it = values.find(key);
 	if (it != cend(values))
 	{
@@ -210,28 +199,28 @@ auto lookup(atom_ptr const& map, atom_ptr const& key) -> atom_ptr
 }
 
 
-auto lookup_eq(atom_ptr const& a, atom_ptr const& key, atom_ptr const& rhs)
+auto lookup_eq(atom const& a, atom const& key, atom const& rhs)
 {
 	return is_table(a) && (lookup(a, key) == rhs);
 }
 
 
-bool is_statement(atom_ptr const& a)
+bool is_statement(atom const& a)
 {
 	return lookup_eq(a, symbols::type, symbols::statement);
 }
 
 
-bool is_error(atom_ptr const& a)
+bool is_error(atom const& a)
 {
 	return lookup_eq(a, symbols::type, symbols::error);
 }
 
 
-auto len(atom_ptr const& a) -> size_t
+auto len(atom const& a) -> size_t
 {
 	int n = 0;
-	atom_ptr nsym = make_symbol(std::to_string(n));
+	atom nsym = make_symbol(std::to_string(n));
 	while (!is_error(lookup(a, nsym)))
 	{
 		nsym = make_symbol(std::to_string(++n));
@@ -266,7 +255,7 @@ auto skip_ws(StrIt si, StrIt last) -> StrIt
 
 
 template <typename StrIt>
-auto read_symbol(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
+auto read_symbol(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 {
 	auto const sym_first = si;
 	while (si != last && is_symbol_char(*si))
@@ -278,7 +267,7 @@ auto read_symbol(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 
 
 template <typename StrIt>
-auto read_string(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
+auto read_string(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 {
 	char const quote_char = (*si);
 
@@ -318,14 +307,14 @@ auto read_string(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 
 
 template <typename StrIt>
-auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>;
+auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, std::optional<atom>>;
 
 template <typename StrIt>
-auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>;
+auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom>;
 
 
 template <typename StrIt>
-auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
+auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 {
 	static auto const eof_error = make_error(symbols::read_error, "Unexpected eof while reading table");
 
@@ -378,7 +367,7 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 			return { si, value };
 		}
 
-		values.emplace(key, value);
+		values.emplace(*key, value);
 
 		// ,
 		si = skip_ws(si, last);
@@ -398,12 +387,12 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 
 
 template <typename StrIt>
-auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
+auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, std::optional<atom>>
 {
 	si = skip_ws(si, last);
 	if (si == last)
 	{
-		return { si, nullptr };
+		return { si, std::nullopt };
 	}
 
 	char const c = (*si);
@@ -427,12 +416,12 @@ auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 	}
 
 	// not an atom
-	return { si, nullptr };
+	return { si, std::nullopt };
 }
 
 
 template <typename StrIt>
-auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
+auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 {
 	table_values values = { 
 		{symbols::type, symbols::statement}
@@ -462,27 +451,27 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom_ptr>
 				return { si, make_table(values) };
 			}
 		}
-			
-		if (is_error(result))
+		
+		atom const& a = (*result);
+		if (is_error(a))
 		{
 			// propogate error
-			return { si, result };
+			return { si, a };
 		}
 		
-		values.emplace(make_symbol(std::to_string(n++)), result);
+		values.emplace(make_symbol(std::to_string(n++)), a);
 	}
 }
 
 
-auto read(atom_ptr const& input) -> atom_ptr
+auto read(atom const& input) -> atom
 {
-	assert(input);
 	if (!is_string(input))
 	{
 		return input;
 	}
 
-	std::string const& str = input->get_value();
+	std::string const& str = input.get_value();
 	auto si = cbegin(str);
 	auto const last = cend(str);
 	auto const [new_si, result] = read_statement(si, last);
@@ -497,7 +486,7 @@ auto read(atom_ptr const& input) -> atom_ptr
 }
 
 
-auto eval(atom_ptr const& expr) -> atom_ptr
+auto eval(atom const& expr) -> atom
 {
 	// non-statement evals to itself
 	if (!is_statement(expr))
@@ -513,9 +502,9 @@ auto eval(atom_ptr const& expr) -> atom_ptr
 	}
 
 	// statement of more than one item performs a lookup
-	atom_ptr const& map = eval(lookup(expr, symbols::zero));
-	atom_ptr const& key = eval(lookup(expr, symbols::one));
-	atom_ptr const& result = eval(lookup(map, key));
+	atom const& map = eval(lookup(expr, symbols::zero));
+	atom const& key = eval(lookup(expr, symbols::one));
+	atom const& result = eval(lookup(map, key));
 	if (is_error(result))
 	{
 		return result;
@@ -541,14 +530,14 @@ auto eval(atom_ptr const& expr) -> atom_ptr
 
 
 template <typename Fn>
-void print_table(std::ostream& out, atom_ptr const& table, Fn print_atom)
+void print_table(std::ostream& out, atom const& table, Fn print_atom)
 {
-	assert(table->type() == atom_type::table);
+	assert(is_table(table));
 
 	out << "{";
 
 	std::string separator;
-	for (auto kv : table->get_pairs())
+	for (auto kv : table.get_pairs())
 	{
 		out << separator;
 		print_atom(out, kv.first);
@@ -561,39 +550,39 @@ void print_table(std::ostream& out, atom_ptr const& table, Fn print_atom)
 }
 
 
-auto operator<< (std::ostream& out, atom_ptr const& patom) -> std::ostream&
+auto operator<< (std::ostream& out, atom const& a) -> std::ostream&
 {
-	switch (patom->type())
+	switch (a.type())
 	{
-	case atom_type::symbol: { out << patom->get_value(); break; }
-	case atom_type::string: { out << '"' << patom->get_value() << '"'; break; }
-	case atom_type::table:  { print_table(out, patom, operator<<); break; }
+	case atom_type::symbol: { out << a.get_value(); break; }
+	case atom_type::string: { out << '"' << a.get_value() << '"'; break; }
+	case atom_type::table:  { print_table(out, a, operator<<); break; }
 	default:                { throw std::runtime_error{ "Unknown atom_type" }; }
 	}
 	return out;
 }
 
 
-void pretty_print(std::ostream& out, atom_ptr const& patom)
+void pretty_print(std::ostream& out, atom const& a)
 {
-	switch (patom->type())
+	switch (a.type())
 	{
 		case atom_type::symbol:
 		case atom_type::string:
 		{
-			out << patom;
+			out << a;
 			break;
 		}
 
 		case atom_type::table:
 		{
-			if (is_statement(patom))
+			if (is_statement(a))
 			{
 				out << "(";
-				size_t const n = len(patom);
+				size_t const n = len(a);
 				for (size_t i = 0; i < n;)
 				{
-					atom_ptr statement_atom = lookup(patom, make_symbol(std::to_string(i)));
+					atom statement_atom = lookup(a, make_symbol(std::to_string(i)));
 					pretty_print(out, statement_atom);
 					if (++i < n)
 					{
@@ -604,7 +593,7 @@ void pretty_print(std::ostream& out, atom_ptr const& patom)
 			}
 			else
 			{
-				print_table(out, patom, pretty_print);
+				print_table(out, a, pretty_print);
 			}
 			break;
 		}
@@ -617,7 +606,7 @@ void pretty_print(std::ostream& out, atom_ptr const& patom)
 }
 
 
-auto prompt_user() -> atom_ptr
+auto prompt_user() -> atom
 {
 	char const* const prompt = "> ";
 	auto const prompt_length = strlen(prompt);
@@ -635,12 +624,12 @@ void repl()
 	while (true)
 	{
 		// read
-		atom_ptr const input = prompt_user();
+		atom const input = prompt_user();
 
-		atom_ptr value = read(input);
+		atom value = read(input);
 		if (is_error(value))
 		{
-			std::cout << "Read error: " << lookup(value, symbols::message)->get_value() << "\n\n";
+			std::cout << "Read error: " << lookup(value, symbols::message).get_value() << "\n\n";
 			continue;
 		}
 		
@@ -653,7 +642,7 @@ void repl()
 		// print
 		if (is_error(value))
 		{
-			std::cout << "Eval error: " << lookup(value, symbols::message)->get_value();
+			std::cout << "Eval error: " << lookup(value, symbols::message).get_value();
 		}
 		else
 		{

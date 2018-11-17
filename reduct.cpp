@@ -817,7 +817,6 @@ void pretty_print(std::ostream& out, atom const& a)
 auto prompt_user() -> atom
 {
 	char const* const prompt = "> ";
-	auto const prompt_length = strlen(prompt);
 
 	std::string line;
 	std::cout << prompt;

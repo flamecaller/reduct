@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?> 
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="atom">
+    <DisplayString Condition="m_type == atom_type::symbol">{m_value._Head,sb}</DisplayString>
+    <DisplayString Condition="m_type == atom_type::string">"{m_value._Head,sb}"</DisplayString>
+    <DisplayString Condition="m_type == atom_type::table">{m_value._Tail._Head}</DisplayString>
+    <Expand>
+      <Item Name="value" Condition="m_value._Which == 0">m_value._Head</Item>
+      <Item Name="pairs" Condition="m_value._Which == 1">m_value._Tail._Head</Item>
+    </Expand>
+  </Type>
+</AutoVisualizer>

@@ -121,6 +121,9 @@
   <ItemGroup>
     <ClCompile Include="..\reduct.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="reduct.natvis" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

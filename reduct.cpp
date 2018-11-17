@@ -17,9 +17,22 @@ bool operator< (atom const&, atom const&);
 bool operator== (atom const&, atom const&);
 
 auto operator<< (std::ostream& out, atom const& atom) -> std::ostream&;
+using table_values = std::map<atom, atom>;
+
+
 void pretty_print(std::ostream& out, atom const& atom);
 
-using table_values = std::map<atom, atom>;
+struct pretty
+{
+	atom const& m_atom;
+	pretty(atom const& a) : m_atom(a) {}
+};
+
+auto operator<< (std::ostream& out, pretty const& p) -> std::ostream&
+{
+	pretty_print(out, p.m_atom);
+	return out;
+}
 
 
 enum class atom_type
@@ -271,6 +284,12 @@ bool is_statement(atom const& a)
 bool is_error(atom const& a)
 {
 	return lookup_eq(a, symbols::type, symbols::error);
+}
+
+
+bool is_reserved_symbol(atom const& a)
+{
+	return is_symbol(a) && (a.get_value().compare(0, 2, "__") == 0);
 }
 
 
@@ -705,17 +724,56 @@ void print_table(std::ostream& out, atom const& table, Fn print_atom)
 }
 
 
-auto operator<< (std::ostream& out, atom const& a) -> std::ostream&
+void print_atom(std::ostream& out, atom const& a)
 {
 	switch (a.type())
 	{
 	case atom_type::symbol:       { out << a.get_value(); break; }
 	case atom_type::substitution: { out << '$' << a.get_value(); break; }
 	case atom_type::string:       { out << '"' << a.get_value() << '"'; break; }
-	case atom_type::table:        { print_table(out, a, operator<<); break; }
+	case atom_type::table:        { print_table(out, a, print_atom); break; }
 	default:                      { throw std::runtime_error{ "Unknown atom_type" }; }
 	}
+}
+
+
+auto operator<< (std::ostream& out, atom const& a) -> std::ostream&
+{
+	print_atom(out, a);
 	return out;
+}
+
+
+void pretty_print_statement(std::ostream& out, atom const& a)
+{
+	out << "(";
+	size_t const n = len(a);
+	for (size_t i = 0; i < n;)
+	{
+		atom statement_atom = lookup(a, make_symbol(std::to_string(i)));
+		pretty_print(out, statement_atom);
+		if (++i < n)
+		{
+			out << ' ';
+		}
+	}
+	out << ")";
+}
+
+
+void pretty_print_error(std::ostream& out, atom const& a)
+{
+	assert(is_table(a));
+	assert(lookup_eq(a, symbols::type, symbols::error));
+
+	out << lookup(a, symbols::error_type) << ": ";
+	for (auto kv : a.get_pairs())
+	{
+		if (!is_reserved_symbol(kv.first))
+		{
+			out << "\n  " << kv.first << " = " << kv.second;
+		}
+	}
 }
 
 
@@ -735,18 +793,11 @@ void pretty_print(std::ostream& out, atom const& a)
 		{
 			if (is_statement(a))
 			{
-				out << "(";
-				size_t const n = len(a);
-				for (size_t i = 0; i < n;)
-				{
-					atom statement_atom = lookup(a, make_symbol(std::to_string(i)));
-					pretty_print(out, statement_atom);
-					if (++i < n)
-					{
-						out << ' ';
-					}
-				}
-				out << ")";
+				pretty_print_statement(out, a);
+			}
+			else if (is_error(a))
+			{
+				pretty_print_error(out, a);
 			}
 			else
 			{
@@ -781,28 +832,18 @@ void repl()
 	while (true)
 	{
 		// read
-		atom const input = prompt_user();
-
-		atom value = read(input);
-		if (is_error(value))
-		{
-			std::cout << "Read error: " << lookup(value, symbols::message).get_value() << "\n\n";
-			continue;
-		}
+		atom value = read(prompt_user());
 		
 		// eval
 		std::set<atom> known_states;
-		bool infinite_loop = false;
 		while (is_statement(value))
 		{
-			std::cout << "=> ";
-			pretty_print(std::cout, value);
-			std::cout << "\n";
+			std::cout << "=> " << pretty(value) << "\n";
 			value = eval(value);
 
 			if (known_states.find(value) != known_states.end())
 			{
-				infinite_loop = true;
+				value = make_error(symbols::eval_error, "Infinite loop detected, bailing");
 				break;
 			}
 			else
@@ -812,19 +853,7 @@ void repl()
 		}
 
 		// print
-		if (infinite_loop)
-		{
-			std::cout << "Infinite loop detected, bailing";
-		}
-		else if (is_error(value))
-		{
-			std::cout << "Eval error: " << lookup(value, symbols::message).get_value();
-		}
-		else
-		{
-			pretty_print(std::cout, value);
-		}
-		std::cout << "\n\n";
+		std::cout << pretty(value) << "\n\n";
 	}
 }
 

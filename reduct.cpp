@@ -3,6 +3,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <variant>
@@ -25,7 +26,8 @@ enum class atom_type
 {
 	symbol,
 	string,
-	table
+	table,
+	substitution // last so that it always appears last in printed tables, which makes more semantic sense
 };
 
 
@@ -36,7 +38,7 @@ public:
 		m_type(type), 
 		m_value(std::move(value))
 	{
-		assert(m_type == atom_type::symbol || m_type == atom_type::string);
+		assert(is_string_type());
 	}
 
 	explicit atom(table_values values) :
@@ -49,14 +51,31 @@ public:
 
 	std::string const& get_value() const 
 	{
-		assert(type() == atom_type::symbol || type() == atom_type::string);
+		assert(is_string_type());
 		return std::get<std::string>(m_value);
 	}
 
 	table_values const& get_pairs() const
 	{
-		assert(type() == atom_type::table);
+		assert(is_table_type());
 		return std::get<table_values>(m_value);
+	}
+
+	auto get_universal_lookup_pair() const -> std::optional<std::pair<atom, atom>>
+	{
+		assert(is_table_type());
+		table_values const& pairs = get_pairs();
+		auto it = std::find_if(
+			cbegin(pairs), cend(pairs),
+			[](auto const& kv) { return kv.first.type() == atom_type::substitution; }
+		);
+
+		if (it == cend(pairs))
+		{
+			return std::nullopt;
+		}
+
+		return (*it);
 	}
 
 	friend bool operator==(atom const& lhs, atom const& rhs)
@@ -75,6 +94,19 @@ public:
 	{
 		return (lhs.m_type < rhs.m_type) 
 			|| (lhs.m_type == rhs.m_type) && (lhs.m_value < rhs.m_value);
+	}
+
+private:
+	bool is_string_type() const
+	{
+		return m_type == atom_type::symbol
+			|| m_type == atom_type::string
+			|| m_type == atom_type::substitution;
+	}
+
+	bool is_table_type() const
+	{
+		return m_type == atom_type::table;
 	}
 
 private:
@@ -98,6 +130,12 @@ auto make_symbol(std::string value) -> atom
 }
 
 
+auto make_substitution(std::string value) -> atom
+{
+	return atom(atom_type::substitution, std::move(value));
+}
+
+
 auto make_string(std::string value) -> atom
 {
 	return atom(atom_type::string, std::move(value));
@@ -113,6 +151,12 @@ auto make_table(table_values values) -> atom
 auto is_symbol(atom const& a) -> bool
 {
 	return a.type() == atom_type::symbol;
+}
+
+
+auto is_substitution(atom const& a) -> bool
+{
+	return a.type() == atom_type::substitution;
 }
 
 
@@ -143,6 +187,10 @@ namespace symbols
 	atom const key = make_symbol("key");
 	atom const message = make_symbol("message");
 
+	atom const universal_lookup_key = make_symbol("universal_lookup_key");
+	atom const universal_lookup_expr = make_symbol("universal_lookup_expr");
+	atom const value = make_symbol("value");
+
 	atom const zero = make_symbol("0");
 	atom const one = make_symbol("1");
 }
@@ -160,6 +208,15 @@ auto make_error(atom const& type, std::string const& msg, table_values data = {}
 	values.emplace(symbols::type, symbols::error);
 	values.emplace(symbols::error_type, type);
 	values.emplace(symbols::message, make_string(msg));
+
+	return make_table(std::move(values));
+}
+
+
+auto make_statement(table_values atoms) -> atom
+{
+	table_values values = std::move(atoms);
+	values.emplace(symbols::type, symbols::statement);
 
 	return make_table(std::move(values));
 }
@@ -229,6 +286,66 @@ auto len(atom const& a) -> size_t
 }
 
 
+auto universal_lookup(atom const& map, atom const& key) -> atom
+{
+	auto const pul = map.get_universal_lookup_pair();
+	if (!pul)
+	{
+		return make_error(
+			symbols::lookup_error,
+			"Could not find key in table",
+			{
+				{symbols::map, map},
+				{symbols::key, key}
+			}
+		);
+	}
+
+	// perform substitution
+	atom const& ul_key = pul->first;
+	atom const& ul_expr = pul->second;
+
+	auto fn_substitute = 
+		[&map, &key, &ul_key](atom const& a)
+		{
+			if (is_substitution(a) && (ul_key != a))
+			{
+				//TODO: make a read-time error?
+				return make_error(
+					symbols::lookup_error,
+					"Mismatch between substitution key and expression",
+					{
+						{symbols::map, map},
+						{symbols::key, key},
+						{symbols::universal_lookup_key, ul_key},
+						{symbols::value, a}
+					}
+				);
+			}
+
+			return (a == ul_key) ? key : a;
+		};
+		
+
+	// Single value
+	if (!is_statement(ul_expr))
+	{
+		return fn_substitute(ul_expr);
+	}
+
+	// Statement
+	table_values new_expr;
+	size_t const ul_expr_len = len(ul_expr);
+	for (size_t i = 0; i < ul_expr_len; ++i)
+	{
+		atom const isym = make_symbol(std::to_string(i));
+		atom const& v = lookup(ul_expr, isym);
+		new_expr.emplace(isym, fn_substitute(v));
+	}
+	return make_statement(new_expr);
+}
+
+
 bool is_symbol_char(char c)
 {
 	return isalnum(c)
@@ -263,6 +380,21 @@ auto read_symbol(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 		++si;
 	}
 	return { si, make_symbol(std::string(sym_first, si)) };
+}
+
+
+template <typename StrIt>
+auto read_substitution(StrIt si, StrIt last) -> std::pair<StrIt, atom>
+{
+	assert(*si == '$');
+	++si; // skip $
+
+	auto const sub_first = si;
+	while (si != last && is_symbol_char(*si))
+	{
+		++si;
+	}
+	return { si, make_substitution(std::string(sub_first, si)) };
 }
 
 
@@ -322,6 +454,7 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 	++si; // skip opening paren
 	
 	table_values values;
+	bool has_sub = false;
 	while (true)
 	{
 		si = skip_ws(si, last);
@@ -337,11 +470,21 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 		}
 
 		// key
-		auto const [si1, key] = read_atom(si, last);
+		auto const [si1, pkey] = read_atom(si, last);
 		si = si1;
-		if (!key)
+		if (!pkey)
 		{
 			return { si, make_error(symbols::read_error, std::string() + "Unexpected character '" + (*si) + "'") };
+		}
+		atom const& key = (*pkey);
+
+		if (is_substitution(key))
+		{
+			if (has_sub)
+			{
+				return { si, make_error(symbols::read_error, "Table has more than one universal substitution.") };
+			}
+			has_sub = true;
 		}
 
 		// =
@@ -367,7 +510,7 @@ auto read_table(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 			return { si, value };
 		}
 
-		values.emplace(*key, value);
+		values.emplace(key, value);
 
 		// ,
 		si = skip_ws(si, last);
@@ -403,6 +546,12 @@ auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, std::optional<atom>>
 		return read_symbol(si, last);
 	}
 
+	// subtitution?
+	if (c == '$')
+	{
+		return read_substitution(si, last);
+	}
+
 	// string?
 	if (c == '"' || c == '\'')
 	{
@@ -423,9 +572,7 @@ auto read_atom(StrIt si, StrIt last) -> std::pair<StrIt, std::optional<atom>>
 template <typename StrIt>
 auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 {
-	table_values values = { 
-		{symbols::type, symbols::statement}
-	};
+	table_values values;
 
 	int n = 0;
 	while (true)
@@ -448,7 +595,7 @@ auto read_statement(StrIt si, StrIt last) -> std::pair<StrIt, atom>
 			}
 			else
 			{
-				return { si, make_table(values) };
+				return { si, make_statement(values) };
 			}
 		}
 		
@@ -477,7 +624,7 @@ auto read(atom const& input) -> atom
 	auto const [new_si, result] = read_statement(si, last);
 	si = new_si;
 
-	if (si != last)
+	if (!is_error(result) && si != last)
 	{
 		return make_error(symbols::read_error, std::string() + "Unexpected character '" + (*si) + "'");
 	}
@@ -504,8 +651,17 @@ auto eval(atom const& expr) -> atom
 	// statement of more than one item performs a lookup
 	atom const& map = eval(lookup(expr, symbols::zero));
 	atom const& key = eval(lookup(expr, symbols::one));
-	atom const& result = eval(lookup(map, key));
+	atom result = lookup(map, key);
 	if (is_error(result))
+	{
+		// specific lookup failed, try universal lookup
+		if (is_table(map))
+		{
+			result = universal_lookup(map, key);
+		}
+	}
+
+	if (expr_len == 2 || is_error(result))
 	{
 		return result;
 	}
@@ -513,7 +669,6 @@ auto eval(atom const& expr) -> atom
 	// Begin a new expression with the result, followed by the rest of the original
 	// statement minus the map & key.
 	table_values new_expr {
-		{symbols::type, symbols::statement},
 		{symbols::zero, result}
 	};
 	
@@ -525,7 +680,7 @@ auto eval(atom const& expr) -> atom
 		);
 	}
 
-	return make_table(std::move(new_expr));
+	return make_statement(std::move(new_expr));
 }
 
 
@@ -554,10 +709,11 @@ auto operator<< (std::ostream& out, atom const& a) -> std::ostream&
 {
 	switch (a.type())
 	{
-	case atom_type::symbol: { out << a.get_value(); break; }
-	case atom_type::string: { out << '"' << a.get_value() << '"'; break; }
-	case atom_type::table:  { print_table(out, a, operator<<); break; }
-	default:                { throw std::runtime_error{ "Unknown atom_type" }; }
+	case atom_type::symbol:       { out << a.get_value(); break; }
+	case atom_type::substitution: { out << '$' << a.get_value(); break; }
+	case atom_type::string:       { out << '"' << a.get_value() << '"'; break; }
+	case atom_type::table:        { print_table(out, a, operator<<); break; }
+	default:                      { throw std::runtime_error{ "Unknown atom_type" }; }
 	}
 	return out;
 }
@@ -568,6 +724,7 @@ void pretty_print(std::ostream& out, atom const& a)
 	switch (a.type())
 	{
 		case atom_type::symbol:
+		case atom_type::substitution:
 		case atom_type::string:
 		{
 			out << a;
@@ -634,13 +791,32 @@ void repl()
 		}
 		
 		// eval
+		std::set<atom> known_states;
+		bool infinite_loop = false;
 		while (is_statement(value))
 		{
+			std::cout << "=> ";
+			pretty_print(std::cout, value);
+			std::cout << "\n";
 			value = eval(value);
+
+			if (known_states.find(value) != known_states.end())
+			{
+				infinite_loop = true;
+				break;
+			}
+			else
+			{
+				known_states.emplace(value);
+			}
 		}
 
 		// print
-		if (is_error(value))
+		if (infinite_loop)
+		{
+			std::cout << "Infinite loop detected, bailing";
+		}
+		else if (is_error(value))
 		{
 			std::cout << "Eval error: " << lookup(value, symbols::message).get_value();
 		}

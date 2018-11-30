@@ -1,10 +1,13 @@
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
+#include <stack>
 #include <string>
 #include <variant>
 
@@ -15,26 +18,14 @@ using table_ptr = std::shared_ptr<table>;
 
 class table
 {
-private:
+public:
 	using values_map = std::map<table, table>;
 	using values_type = std::variant<std::string, values_map>;
 
-public:
-	table() : m_values(values_map())
-	{
-	}
-
-	table(char const* value) : m_values(value)
-	{
-	}
-
-	table(std::string const& value) : m_values(value)
-	{
-	}
-
-	table(std::initializer_list<values_map::value_type> list) : m_values(list)
-	{
-	}
+	table() : m_values(values_map()) {}
+	table(char const* value) : m_values(value) {}
+	table(std::string const& value) : m_values(value) {}
+	table(std::initializer_list<values_map::value_type> list) : m_values(list) {}
 	
 	bool operator== (table const& rhs) const
 	{
@@ -49,37 +40,6 @@ public:
 	bool operator< (table const& rhs) const
 	{
 		return m_values < rhs.m_values;
-	}
-
-	std::string to_string() const
-	{
-		if (auto pstr = std::get_if<std::string>(&m_values))
-		{
-			return (*pstr);
-		}
-
-		std::ostringstream out;
-		if (operator[]("type") == "lookup-expression")
-		{
-			out << "(" << operator[]("map").to_string();
-			if (operator[]("key") != "lookup-error")
-			{
-				out << " " << operator[]("key").to_string();
-			}
-			out << ")";
-		}
-		else
-		{
-			out << "{";
-			char const* sep = "";
-			for (auto kv : std::get<values_map>(m_values))
-			{
-				out << sep << kv.first.to_string() << " = " << kv.second.to_string();
-				sep = ", ";
-			}
-			out << "}";
-		}
-		return out.str();
 	}
 
 	table operator[](table const& key) const
@@ -115,6 +75,24 @@ public:
 		return false;
 	}
 
+	std::optional<std::string> as_string() const
+	{
+		if (auto pstr = std::get_if<std::string>(&m_values))
+		{
+			return (*pstr);
+		}
+		return std::nullopt;
+	}
+
+	std::optional<values_map> as_values() const
+	{
+		if (auto pvals = std::get_if<values_map>(&m_values))
+		{
+			return (*pvals);
+		}
+		return std::nullopt;
+	}
+
 private:
 	table(values_type values) : m_values(values) {}
 
@@ -126,13 +104,6 @@ private:
 table const lookup_error{ "lookup-error" };
 
 
-std::ostream& operator<<(std::ostream& out, table const& t)
-{
-	out << t.to_string();
-	return out;
-}
-
-
 bool issymbol(char c)
 {
 	return isalnum(c);
@@ -142,6 +113,7 @@ bool issymbol(char c)
 auto read(std::string const& input) -> table
 {
 	table expr;
+	std::stack<table> expr_stack;
 
 	auto it = cbegin(input);
 	auto const last = cend(input);
@@ -176,17 +148,103 @@ auto read(std::string const& input) -> table
 			}
 			continue;
 		}
+		else if (c == '(')
+		{
+			++it;
+			expr_stack.push(expr);
+			expr = table();
+			continue;
+		}
+		else if (c == ')' && !expr_stack.empty())
+		{
+			++it;
+			table parent = expr_stack.top();
+			expr_stack.pop();
+			if (expr.empty())
+			{
+				expr = parent;
+			}
+			else if (!parent.empty())
+			{
+				expr = table({
+					{"type", "lookup-expression"},
+					{"map", parent},
+					{"key", expr }
+				});
+			}
+			continue;
+		}
 		else
 		{
 			return table({
 				{"type", "error"},
 				{"error-type", "read-error"},
-				{"message", std::string("Unknown character '") + c + "'"}
+				{"message", std::string("Unexpected '") + c + "'"}
 			});
 		}
 	}
 
+	if (!expr_stack.empty())
+	{
+		return table({
+			{"type", "error"},
+			{"error-type", "read-error"},
+			{"message", "Missing ')'"}
+		});
+	}
 	return expr;
+}
+
+
+std::string pretty(table const& tab)
+{
+	if (auto pstr = tab.as_string())
+	{
+		if (std::any_of(pstr->begin(), pstr->end(), isspace))
+		{
+			return '"' + (*pstr) + '"';
+		}
+		else
+		{
+			return (*pstr);
+		}
+	}
+
+	std::ostringstream out;
+	table const type = tab["type"];
+	if (type == "lookup-expression")
+	{
+		out << "(" << pretty(tab["map"]);
+		if (tab["key"] != "lookup-error")
+		{
+			out << " " << pretty(tab["key"]);
+		}
+		out << ")";
+	}
+	else if (type == "error")
+	{
+		out << *(tab["error-type"].as_string()) << ": " << *(tab["message"].as_string());
+	}
+	else
+	{
+		out << "{";
+		char const* sep = "";
+		auto const vals = (*tab.as_values());
+		for (auto kv : vals)
+		{
+			out << sep << pretty(kv.first) << " = " << pretty(kv.second);
+			sep = ", ";
+		}
+		out << "}";
+	}
+	return out.str();
+}
+
+
+std::ostream& operator<<(std::ostream& out, table const& t)
+{
+	out << pretty(t);
+	return out;
 }
 
 

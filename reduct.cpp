@@ -180,6 +180,24 @@ auto read(std::string const& input) -> table
 				expr = make_lookup_expr(parent, expr);
 			}
 		}
+		else if (c == '"')
+		{
+			++it; // opening quote
+			std::ostringstream buf;
+			while ((*it) != '"')
+			{
+				if (*it == '\\')
+				{
+					++it;	
+				}
+				buf << (*it);
+				++it;
+			}
+			++it; // closing quote
+
+			auto const str = buf.str();
+			expr = (expr.empty()) ? str : make_lookup_expr(expr, str);
+		}
 		else
 		{
 			return make_error(read_error, std::string("Unexpected '") + c + "'");

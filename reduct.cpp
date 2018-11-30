@@ -102,11 +102,32 @@ private:
 
 
 table const lookup_error{ "lookup-error" };
+table const read_error{ "read-error" };
 
 
 bool issymbol(char c)
 {
 	return isalnum(c);
+}
+
+
+auto make_error(table const& type, table const& message) -> table
+{
+	return table({
+		{"type", "error"},
+		{"error-type", type},
+		{"message", message}
+	});
+}
+
+
+auto make_lookup_expr(table const& map, table const& key) -> table
+{
+	return table({
+		{"type", "lookup-expression"},
+		{"map", map},
+		{"key", key}
+	});
 }
 
 
@@ -123,7 +144,6 @@ auto read(std::string const& input) -> table
 		if (isspace(c))
 		{
 			++it;
-			continue;
 		}
 		else if (issymbol(c))
 		{
@@ -134,26 +154,13 @@ auto read(std::string const& input) -> table
 			}
 
 			std::string sym{ first, it };
-			if (expr.empty())
-			{
-				expr = sym;
-			}
-			else
-			{
-				expr = table({
-					{"type", "lookup-expression"},
-					{"map", expr},
-					{"key", sym}
-				});
-			}
-			continue;
+			expr = (expr.empty()) ? sym : make_lookup_expr(expr, sym);
 		}
 		else if (c == '(')
 		{
 			++it;
 			expr_stack.push(expr);
 			expr = table();
-			continue;
 		}
 		else if (c == ')' && !expr_stack.empty())
 		{
@@ -162,35 +169,26 @@ auto read(std::string const& input) -> table
 			expr_stack.pop();
 			if (expr.empty())
 			{
+				// () is essentially whitespace, it is not an evaluated lookup. 
+				//TODO: Should this be an error?
 				expr = parent;
 			}
 			else if (!parent.empty())
 			{
-				expr = table({
-					{"type", "lookup-expression"},
-					{"map", parent},
-					{"key", expr }
-				});
+				// Only make a lookup expression if the parent should be considered a 
+				// map, otherwise read("(1)") becomes the lookup '({} 1)'.
+				expr = make_lookup_expr(parent, expr);
 			}
-			continue;
 		}
 		else
 		{
-			return table({
-				{"type", "error"},
-				{"error-type", "read-error"},
-				{"message", std::string("Unexpected '") + c + "'"}
-			});
+			return make_error(read_error, std::string("Unexpected '") + c + "'");
 		}
 	}
 
 	if (!expr_stack.empty())
 	{
-		return table({
-			{"type", "error"},
-			{"error-type", "read-error"},
-			{"message", "Missing ')'"}
-		});
+		return make_error(read_error, "Missing ')'");
 	}
 	return expr;
 }

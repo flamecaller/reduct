@@ -183,15 +183,25 @@ auto read(std::string const& input) -> table
 		else if (c == '"')
 		{
 			++it; // opening quote
+			if (it == last)
+			{
+				return make_error(read_error, "Missing closing '\"'");
+			}
+
 			std::ostringstream buf;
 			while ((*it) != '"')
 			{
 				if (*it == '\\')
 				{
-					++it;	
+					++it;
 				}
 				buf << (*it);
 				++it;
+
+				if (it == last)
+				{
+					return make_error(read_error, "Missing closing '\"'");
+				}
 			}
 			++it; // closing quote
 
